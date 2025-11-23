@@ -1,29 +1,29 @@
 # --- Full updated FastAPI app with docling HTML conversion and RSS excerpt ---
+import json
 import subprocess
 import uuid
+from datetime import datetime, UTC
 from pathlib import Path
 
 import bleach
 from docling.document_converter import DocumentConverter
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from feedgen.entry import FeedEntry
 from feedgen.feed import FeedGenerator
-from pydantic import BaseModel, DirectoryPath
+from pydantic import BaseModel, DirectoryPath, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 # Directories
-BASE_DIR = Path(__file__).resolve().parent
-
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", env_prefix="LTE_", extra="ignore"
     )
 
     # Paths
-    epub_dir: DirectoryPath = BASE_DIR / "epubs"
-    rss_path: Path = BASE_DIR / "rss.xml"
+    epub_dir: DirectoryPath
+    rss_path: Path
+    rss_state_path: Path
 
     # App/base
     base_url: str = "http://localhost"
@@ -35,11 +35,16 @@ class Settings(BaseSettings):
     # External tools
     convertext_bin: str = "convertext"
 
+    @model_validator(mode="after")
+    def validate_epub_dir(self) -> "Settings":
+        try:
+            self.epub_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            raise RuntimeError(f"EPUB directory error: {e}")
+        return self
+
 
 settings = Settings()
-EPUB_DIR = settings.epub_dir
-RSS_PATH = settings.rss_path
-EPUB_DIR.mkdir(exist_ok=True)
 
 # Allowed HTML tags for excerpt
 ALLOWED_TAGS = settings.allowed_tags
@@ -91,26 +96,52 @@ def convert_markdown_to_epub(text: str, output_path: Path):
 
 
 def update_rss(title: str, original_url: str, epub_url: str, excerpt: str):
-    fg = FeedGenerator()
-    if RSS_PATH.exists():
-        fg.load_extension("podcast")
-        fg.parse(str(RSS_PATH))
+    """Update RSS feed using JSON state file and generate RSS from scratch."""
+
+    # 1. Wczytaj stan z pliku, jeśli istnieje
+    if settings.rss_state_path.exists():
+        try:
+            with open(settings.rss_state_path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+        except Exception:
+            state = {"updated": "", "entries": []}
     else:
-        fg.id("urn:epubfeed")
-        fg.title("EPUB Downloads Feed")
-        fg.link(href=f"{settings.base_url}/rss.xml", rel="self")
+        state = {"updated": "", "entries": []}
 
-    fe: FeedEntry = fg.add_entry()
-    fe.id(str(uuid.uuid4()))
-    fe.title(title)
-    fe.link(href=epub_url)
-    fe.description(
-        f"<![CDATA[{excerpt}<br><br>"
-        f"Source: <a href='{original_url}'>{original_url}</a>]]>"
-    )
+    # 2. Dodaj nowe entry
+    entry = {
+        "id": str(uuid.uuid4()),
+        "title": title,
+        "link": epub_url,
+        "description": f"<![CDATA[{excerpt}<br><br>Source: <a href='{original_url}'>{original_url}</a>]]>",
+        "content": excerpt,
+    }
+    state["entries"].insert(0, entry)  # najnowsze na górze
 
-    fg.rss_str(pretty=True)
-    fg.rss_file(str(RSS_PATH))
+    # 3. Zaktualizuj czas
+    _now = datetime.now(UTC)
+    state["updated"] = _now.isoformat()
+
+    # 4. Zapisz stan do JSON
+    with open(settings.rss_state_path, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+    # 5. Generuj RSS od zera
+    fg = FeedGenerator()
+    fg.title("EPUB Downloads Feed")
+    fg.link(href="http://localhost/rss.xml", rel="self")
+    fg.description("Auto-generated feed of processed documents")
+    fg.lastBuildDate(_now)
+
+    for e in state["entries"]:
+        fe = fg.add_entry()
+        fe.id(e["id"])
+        fe.title(e["title"])
+        fe.link(href=e["link"])
+        fe.description(e["description"])
+
+    # 6. Zapisz feed XML
+    fg.rss_file(str(settings.rss_state_path), pretty=True)
 
 
 # endregion
@@ -139,7 +170,7 @@ def submit(req: SubmitRequest):
     excerpt = html_excerpt(html_text)
 
     safe_name = f"{request_id}.epub"
-    epub_path = EPUB_DIR / safe_name
+    epub_path = settings.epub_dir / safe_name
 
     try:
         convert_markdown_to_epub(html_text, epub_path)
@@ -155,7 +186,7 @@ def submit(req: SubmitRequest):
 
 @app.get("/epub/{file}")
 def get_epub(file: str):
-    path = EPUB_DIR / file
+    path = settings.epub_dir / file
     if not path.exists():
         raise HTTPException(404)
     return FileResponse(path)
@@ -163,9 +194,9 @@ def get_epub(file: str):
 
 @app.get("/rss.xml")
 def rss():
-    if not RSS_PATH.exists():
+    if not settings.rss_path.exists():
         raise HTTPException(404)
-    return FileResponse(RSS_PATH)
+    return FileResponse(settings.rss_path)
 
 
 # endregion
