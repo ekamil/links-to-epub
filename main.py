@@ -56,8 +56,7 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-
-
+logger.info(f"App start. Data dir: {settings.data_dir}")
 # endregion
 
 
@@ -86,10 +85,11 @@ class RssState(BaseModel):
         insert_at = 0
         for idx, e in enumerate(self.entries):
             if e.id == entry.id:
-                logger.info(f"Duplicate entry {entry.id}, replacing")
+                logger.info(f"RSS: duplicate id={entry.id}, replacing at {idx}")
                 self.entries.pop(idx)
                 insert_at = idx
         self.entries.insert(insert_at, entry)
+        logger.info(f"RSS: added id={entry.id} at pos={insert_at}")
 
 
 # endregion
@@ -99,26 +99,30 @@ app = FastAPI()
 
 
 # region conversion
-
-
 def convert_url(url: str) -> DoclingDocument:
+    logger.info(f"Convert URL: {url}")
     converter = DocumentConverter()
     doc = converter.convert(url).document
+    logger.info(f"Converted URL ok: {url}")
     return doc
 
 
 def get_title(url: str) -> str:
+    logger.info(f"Fetch title: {url}")
     try:
         html = request.urlopen(url).read().decode("utf8")
         soup = bs4.BeautifulSoup(html, "html.parser")
         title = soup.find("title")
-        return title.string
+        t = title.string if title else "Untitled"
+        logger.info(f"Title fetched: {t} ({url})")
+        return t
     except Exception as e:
-        logger.error(f"Error fetching title: {e}")
+        logger.error(f"Title error for {url}: {e}")
         return "Untitled"
 
 
 def convert_to_epub(inputfile: Path) -> Path:
+    logger.info(f"EPUB convert start: {inputfile}")
     success = convertext.convert(
         inputfile,
         "epub",
@@ -127,19 +131,22 @@ def convert_to_epub(inputfile: Path) -> Path:
         overwrite=True,
     )
     logger.info(
-        f"Conversion for {inputfile} result: {success}. Target {inputfile.stem}.epub"
+        f"EPUB convert done: {inputfile} -> {inputfile.stem}.epub (ok={success})"
     )
     return settings.data_dir / f"{inputfile.stem}.epub"
 
 
 def md5sum(url: str) -> str:
-    return md5(url.encode("utf-8")).hexdigest()
+    h = md5(url.encode("utf-8")).hexdigest()
+    logger.debug(f"md5({url})={h}")
+    return h
 
 
 # endregion
 
 
 def update_rss_state(request: SubmitRequest, request_id: str) -> RssState:
+    logger.info(f"RSS update: id={request_id} url={request.url}")
     """Update RSS feed using JSON state file and generate RSS from scratch."""
 
     # 1. Wczytaj stan z pliku, jeśli istnieje
@@ -175,6 +182,7 @@ def update_rss_state(request: SubmitRequest, request_id: str) -> RssState:
 
 
 def _state_to_feed(state: RssState, fmt: Literal["rss", "atom"]) -> FeedGenerator:
+    logger.info(f"Feed build start: fmt={fmt}")
     with open(settings.rss_state_path, "r") as f:
         state = RssState.model_validate_json(f.read())
     fg = FeedGenerator()
@@ -191,10 +199,12 @@ def _state_to_feed(state: RssState, fmt: Literal["rss", "atom"]) -> FeedGenerato
         fe.link(href=e.original_link, rel="alternate")
         fe.content(e.content)
         fe.summary(e.excerpt)
+    logger.info(f"Feed build done: entries={len(state.entries)} fmt={fmt}")
     return fg
 
 
 def enforce_min_heading_level(md: str, min_level: int = 2) -> str:
+    logger.debug(f"Headings enforce: min={min_level}")
     """
     Wymusza minimalny poziom nagłówków Markdown (#..######).
     - Nagłówki o poziomie < min_level zostaną podniesione do min_level.
@@ -225,39 +235,44 @@ def enforce_min_heading_level(md: str, min_level: int = 2) -> str:
 
 
 def merge_markdowns_into_epub(state: RssState) -> None:
-    """Generate a single EPUB file from all the markdown files.
-    This is kind of a feed like RSS.
-    """
-    # Sformatuj markdown
+    logger.info(f"Merge MD->EPUB start: out={settings.feed_md}")
     merged_markdowns = [
         "# EPUB Downloads Feed\n\n",
         f"Last updated: {state.updated.isoformat()}.\n\n",
     ]
     for e in reversed(state.entries):  # oldest first
+        md_path = settings.data_dir / f"{e.id}.md"
+        logger.info(f"Merge MD: {md_path}")
         merged_markdowns.append(f"# {e.title}\n")
         merged_markdowns.append(f"Published on {e.title}.\n")
         merged_markdowns.append(
             f"Source link: [{e.original_link}]({e.original_link}).\n"
         )
-        content = (settings.data_dir / f"{e.id}.md").read_text()
+        content = md_path.read_text()
         content = enforce_min_heading_level(content, 2)
         merged_markdowns.append(content)
         merged_markdowns.append("\n---\n\n")
     with open(settings.feed_md, "w") as f:
         f.writelines(merged_markdowns)
-    # Zapisz jako epub
+    logger.info(f"Merged MD saved: {settings.feed_md}")
     convert_to_epub(settings.feed_md)
+    logger.info(f"EPUB ready: {settings.feed_epub}")
 
 
 def refresh_feeds(state: RssState) -> None:
-    # create a single epub
+    logger.info("Refresh feeds start")
     merge_markdowns_into_epub(state)
 
-    # create feed files
     feed = _state_to_feed(state, "rss")
     feed.rss_file(settings.feed_rss)
+    logger.info(f"RSS file written: {settings.feed_rss}")
+
     feed = _state_to_feed(state, "atom")
     feed.atom_file(settings.feed_atom)
+    logger.info(f"Atom file written: {settings.feed_atom}")
+
+
+# region endpoints
 
 
 # region endpoints
@@ -265,6 +280,7 @@ def refresh_feeds(state: RssState) -> None:
 
 @app.post("/submit")
 def submit(req: SubmitRequest):
+    logger.info(f"Submit: url={req.url}")
     request_id = f"req-{md5sum(req.url)}"
 
     # URL -> HTML via docling
@@ -272,6 +288,7 @@ def submit(req: SubmitRequest):
 
     html: Path = settings.data_dir / f"{request_id}.html"
     document.save_as_html(html, image_mode=ImageRefMode.EMBEDDED)
+    logger.info(f"HTML saved: {html}")
 
     if not req.title:
         if document.name not in ("file", "Untitled"):
@@ -280,38 +297,45 @@ def submit(req: SubmitRequest):
             req.title = get_title(req.url)
     if not req.title:
         req.title = "Untitled"
+    logger.info(f"Resolved title: {req.title}")
 
     # MD
     markdown: Path = settings.data_dir / f"{request_id}.md"
     document.save_as_markdown(markdown)
+    logger.info(f"Markdown saved: {markdown}")
 
     # Update RSS state
     state = update_rss_state(req, request_id)
     refresh_feeds(state)
 
-    # and respond
+    logger.info(f"Submit done: id={request_id}")
     return {"id": request_id, "url": req.url, "title": req.title}
 
 
 def read_state_or_404() -> RssState:
     if not settings.rss_state_path.exists():
+        logger.warning(f"State 404: {settings.rss_state_path}")
         raise HTTPException(404)
     with open(settings.rss_state_path, "r") as f:
         state = RssState.model_validate_json(f.read())
+    logger.info(f"State loaded: entries={len(state.entries)}")
     return state
 
 
+@app.get("/")
 @app.get("/")
 def list_entries():
     state = read_state_or_404()
     for entry in state.entries:
         entry.content = "-"
+    logger.info("List entries")
     return state
 
 
 @app.delete("/")
 def clear():
     # TODO
+    logger.info("Clear requested (TODO)")
     return Response(status_code=204)
 
 
@@ -321,18 +345,19 @@ def clear_feeds():
     settings.feed_md.unlink(missing_ok=True)
     settings.feed_rss.unlink(missing_ok=True)
     settings.feed_atom.unlink(missing_ok=True)
+    logger.info("Feeds removed; regenerating")
     refresh_feeds(state)
     return Response(status_code=204)
 
 
 @app.get("/feed/{fmt}")
 def rss(fmt: Literal["rss", "atom", "epub"]):
+    logger.info(f"Feed request: {fmt}")
     state = read_state_or_404()
 
     last_modified = state.updated
     etag = str(state.updated)  # lub hash entries
 
-    # Prepare headers
     headers = {
         "Cache-Control": "public, max-age=300",
         "Last-Modified": format_datetime(last_modified),
@@ -340,7 +365,6 @@ def rss(fmt: Literal["rss", "atom", "epub"]):
         "Content-Disposition": 'inline; filename="feed.xml"',
     }
 
-    # Get content as a string
     match fmt:
         case "rss":
             feed = _state_to_feed(state, fmt)
@@ -356,7 +380,9 @@ def rss(fmt: Literal["rss", "atom", "epub"]):
             headers["Content-Type"] = "application/epub+zip"
             headers["Content-Disposition"] = 'inline; filename="feed.xml"'
         case _:
+            logger.warning(f"Feed unknown fmt: {fmt}")
             raise HTTPException(400, f"Unknown format: {fmt}")
+    logger.info(f"Feed served: {fmt}")
     return Response(
         content,
         headers=headers,
