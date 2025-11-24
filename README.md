@@ -1,5 +1,13 @@
 # Project README
 
+## Next steps
+
+1. n8n flow
+1. webhook endpoint
+1. deploy this as docker compose with traefik (maybe?)
+1. n8n calls /submit
+1. then saves /epub to the google drive
+
 # Docling → EPUB → RSS Web Service
 
 This project is a lightweight FastAPI web application that:
@@ -13,7 +21,6 @@ This project is a lightweight FastAPI web application that:
 
 ## Features
 
-- Token-based authentication for secure POST requests.
 - HTML excerpt generation from Docling output, sanitized for RSS.
 - Lightweight, single-process, self-hosted architecture.
 - FastAPI endpoints for submitting URLs, fetching EPUB files, and retrieving RSS feed.
@@ -99,22 +106,20 @@ graph TD
 
 ```mermaid
 sequenceDiagram
-participant Client as iOS Shortcut / Client
-participant API as FastAPI /submit
-participant Doc as Docling Library
-participant EPUB as ConverText
-participant Storage as File Storage
-participant RSS as RSS Feed
-
-
-Client->>API: POST URL + title
-API->>Doc: Convert URL -> HTML
-Doc-->>API: HTML content
-API->>EPUB: Convert HTML -> EPUB
-EPUB-->>Storage: Save EPUB file
-API->>RSS: Update feed with title, excerpt, links
-RSS-->>API: Feed updated
-API-->>Client: Return request_id + EPUB link
+    participant Client as iOS Shortcut / Client
+    participant API as FastAPI /submit
+    participant Doc as Docling Library
+    participant EPUB as ConverText
+    participant Storage as File Storage
+    participant RSS as RSS Feed
+    Client ->> API: POST URL + title
+    API ->> Doc: Convert URL -> HTML
+    Doc -->> API: HTML content
+    API ->> EPUB: Convert HTML -> EPUB
+    EPUB -->> Storage: Save EPUB file
+    API ->> RSS: Update feed with title, excerpt, links
+    RSS -->> API: Feed updated
+    API -->> Client: Return request_id + EPUB link
 ```
 
 ## Notes
