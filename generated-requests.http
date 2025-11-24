@@ -1,32 +1,32 @@
 ### submit
-POST http://localhost:8000/submit
+POST {{base_url}}/submit
 
 {"url": "https://www.jenn.site/after-my-dad-died-we-found-the-love-letters/"}
 
 ### submit
-POST http://localhost:8000/submit
+POST {{base_url}}/submit
 
 {"url": "https://jenn.site/dissolution/"}
 
 
 ### RSS
-GET http://localhost:8000/feed/rss
+GET {{base_url}}/feed/rss
 
 
 ### ATOM
-GET http://localhost:8000/feed/atom
+GET {{base_url}}/feed/atom
 
 
 ### EPUB
-GET http://localhost:8000/feed/epub
+GET {{base_url}}/feed/epub
 
 
 ### List
-GET http://localhost:8000/
+GET {{base_url}}/
 
 
 ### Refresh
-POST http://localhost:8000/refresh-feeds/
+POST {{base_url}}/refresh-feeds/
 
 ### clear
-DELETE http://localhost:8000/
+DELETE {{base_url}}/
