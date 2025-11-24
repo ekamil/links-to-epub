@@ -32,5 +32,6 @@ services:
     ports: [ ]
     volumes: [ ]
     environment:
-      LTE_SERVER_PORT: "${APP_PORT:-8000}"
-      LTE_SERVER_ADDRESS: "0.0.0.0"
+      UVICORN_PORT: "${APP_PORT:-8000}"
+      UVICORN_HOST: "0.0.0.0"
+      LTE_DATA_DIR: /tmp

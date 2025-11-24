@@ -34,12 +34,11 @@ RUN uv sync --locked
 # Copy the rest of the application files
 ADD main.py ./
 
-
 ENV LTE_DATA_DIR=/tmp
 ENV LTE_BASE_URL=https://twoja-domena.pl
 
-ENV LTE_SERVER_PORT=8000
+ENV UVICORN_PORT=8000
 EXPOSE 8000
-ENV LTE_SERVER_ADDRESS="0.0.0.0"
+ENV UVICORN_HOST="0.0.0.0"
 
-CMD ["uv", "run", "uvicorn", "main:app", "--host", "${LTE_SERVER_ADDRESS}", "--port", "${LTE_SERVER_PORT}"]
+CMD ["uv", "run", "uvicorn", "main:app"]
