@@ -325,9 +325,13 @@ def read_state_or_404() -> RssState:
 
 
 @app.get("/")
-@app.get("/")
 def list_entries():
-    state = read_state_or_404()
+    if not settings.rss_state_path.exists():
+        logger.info("State not found")
+        raise HTTPException(204)
+    with open(settings.rss_state_path, "r") as f:
+        state = RssState.model_validate_json(f.read())
+    logger.info(f"State loaded: entries={len(state.entries)}")
     for entry in state.entries:
         entry.content = "-"
     logger.info("List entries")
