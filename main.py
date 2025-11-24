@@ -1,14 +1,17 @@
 # --- Full updated FastAPI app with docling HTML conversion and RSS excerpt ---
-import uuid
+import shutil
 from datetime import datetime, UTC
 from email.utils import format_datetime
+from hashlib import md5
 from pathlib import Path
 from typing import Literal
+from urllib import request
 
-import bleach
+import bs4
 import convertext
 from docling.document_converter import DocumentConverter
 from docling_core.types import DoclingDocument
+from docling_core.types.doc import ImageRefMode
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from feedgen.feed import FeedGenerator
@@ -26,20 +29,15 @@ class Settings(BaseSettings):
         env_file=".env", env_prefix="LTE_", extra="ignore"
     )
 
-    # Paths
-    epub_dir: DirectoryPath
-    rss_path: Path
-    rss_state_path: Path
-
-    # App/base
+    data_dir: DirectoryPath
     base_url: str = "http://localhost:8000"
-
     # Excerpt
     excerpt_limit: int = 200
     allowed_tags: list[str] = ["p", "a", "strong", "em", "ul", "li", "br"]
 
-    # External tools
-    convertext_bin: str = "convertext"
+    @property
+    def rss_state_path(self) -> Path:
+        return self.data_dir / "state.json"
 
 
 settings = Settings()
@@ -59,8 +57,8 @@ class RssEntry(BaseModel):
     title: str
     epub_link: str
     original_link: str
-    description: str
-    content: str | None = None
+    content: str
+    excerpt: str
 
 
 class RssState(BaseModel):
@@ -68,7 +66,13 @@ class RssState(BaseModel):
     entries: list[RssEntry] = Field(default_factory=list)
 
     def add_entry(self, entry: RssEntry):
-        self.entries.insert(0, entry)  # newest on top
+        insert_at = 0
+        for idx, e in enumerate(self.entries):
+            if e.id == entry.id:
+                logger.info(f"Duplicate entry {entry.id}, replacing")
+                self.entries.pop(idx)
+                insert_at = idx
+        self.entries.insert(insert_at, entry)
 
 
 # endregion
@@ -86,18 +90,15 @@ def convert_url(url: str) -> DoclingDocument:
     return doc
 
 
-# endregion
-
-
-# region excerpt
-
-
-def html_excerpt(raw_html: str, limit: int | None = None) -> str:
-    if limit is None:
-        limit = settings.excerpt_limit
-    cleaned = bleach.clean(raw_html, tags=set(settings.allowed_tags), strip=True)
-    excerpt = cleaned[:limit]
-    return excerpt + "..." if len(cleaned) > limit else excerpt
+def get_title(url: str) -> str:
+    try:
+        html = request.urlopen(url).read().decode("utf8")
+        soup = bs4.BeautifulSoup(html, "html.parser")
+        title = soup.find("title")
+        return title.string
+    except Exception as e:
+        logger.error(f"Error fetching title: {e}")
+        return "Untitled"
 
 
 # endregion
@@ -106,12 +107,25 @@ def html_excerpt(raw_html: str, limit: int | None = None) -> str:
 # region epub conversion
 
 
-def convert_to_epub(html: Path, epub: Path):
-    success = convertext.convert(
-        str(html), "epub", output=str(settings.epub_dir), keep_intermediate=True
+def convert_to_epub(html: Path) -> Path:
+    convertext.convert(
+        html, "epub", output=str(settings.data_dir), keep_intermediate=False
     )
-    if not success:
-        raise RuntimeError("convertext failed")
+    return settings.data_dir / f"{html.stem}.epub"
+
+
+def convert_to_txt(html: Path) -> Path:
+    convertext.convert(
+        html, "txt", output=str(settings.data_dir), keep_intermediate=False
+    )
+    return settings.data_dir / f"{html.stem}.txt"
+
+
+def convert_to_html(html: Path) -> Path:
+    convertext.convert(
+        html, "html", output=str(settings.data_dir), keep_intermediate=False
+    )
+    return settings.data_dir / f"{html.stem}.html"
 
 
 # endregion
@@ -120,13 +134,15 @@ def convert_to_epub(html: Path, epub: Path):
 # region rss
 
 
-def update_rss(title: str, original_url: str, epub_url: str, excerpt: str) -> None:
+def update_rss(
+    request: SubmitRequest, request_id: str, epub_url: str, excerpt: str
+) -> None:
     """Update RSS feed using JSON state file and generate RSS from scratch."""
 
     # 1. Wczytaj stan z pliku, jeśli istnieje
     if settings.rss_state_path.is_file():
         try:
-            with open(settings.rss_state_path, "r", encoding="utf-8") as f:
+            with open(settings.rss_state_path, "r") as f:
                 state = RssState.model_validate_json(f.read())
         except Exception as e:
             raise RuntimeError(f"RSS state file error: {e}")
@@ -134,14 +150,15 @@ def update_rss(title: str, original_url: str, epub_url: str, excerpt: str) -> No
         state = RssState()
 
     # 2. Dodaj nowe entry
+    original_link = request.url
     entry = RssEntry(
-        id=str(uuid.uuid4()),
-        title=title,  # error
+        id=request_id,
+        title=request.title,
         epub_link=epub_url,
-        original_link=original_url,
+        original_link=original_link,
         # description doesnt work
-        description=f"<![CDATA[{excerpt}<br><br>Source: <a href='{original_url}'>{original_url}</a>]]>",
-        content=excerpt,
+        content=f"<![CDATA[{excerpt}<br><br>Source: <a href='{original_link}'>{original_link}</a>]]>",
+        excerpt=excerpt,
     )
     state.add_entry(entry)
 
@@ -149,17 +166,17 @@ def update_rss(title: str, original_url: str, epub_url: str, excerpt: str) -> No
     state.updated = datetime.now(UTC)
 
     # 4. Zapisz stan do JSON
-    with open(settings.rss_state_path, "w", encoding="utf-8") as f:
+    with open(settings.rss_state_path, "w") as f:
         f.write(state.model_dump_json(indent=2))
 
 
-def _state_to_feed(state: RssState) -> FeedGenerator:
-    with open(settings.rss_state_path, "r", encoding="utf-8") as f:
+def _state_to_feed(state: RssState, format: Literal["rss", "atom"]) -> FeedGenerator:
+    with open(settings.rss_state_path, "r") as f:
         state = RssState.model_validate_json(f.read())
     fg = FeedGenerator()
     fg.id("EPUB Downloads Feed")
-    fg.title("EPUB Downloads Feed")
-    fg.link(href="http://localhost/rss.xml", rel="self")
+    fg.title(f"EPUB Downloads Feed {format}")
+    fg.link(href=f"{settings.base_url}/{format}", rel="self")
     fg.description("Auto-generated feed of processed documents")
     fg.lastBuildDate(state.updated)
 
@@ -169,8 +186,10 @@ def _state_to_feed(state: RssState) -> FeedGenerator:
         fe.title(e.title)
         fe.link(href=e.epub_link, rel="enclosure", type="application/epub+zip")
         fe.link(href=e.original_link, rel="alternate")
-        fe.description(e.description)
-        fe.content(e.content)
+        fe.content(
+            e.content,
+        )
+        fe.summary(e.excerpt)
     return fg
 
 
@@ -188,44 +207,48 @@ def atom_from_state(state: RssState) -> str:
 
 
 # region endpoints
+def md5sum(url: str) -> str:
+    return md5(url.encode("utf-8")).hexdigest()
+
+
 @app.post("/submit")
 def submit(req: SubmitRequest):
-    request_id = str(uuid.uuid4())
+    request_id = f"req-{md5sum(req.url)}"
 
-    try:
-        # URL -> HTML via docling
-        document = convert_url(req.url)
-        html_text = document.export_to_html()
-    except Exception as e:
-        raise HTTPException(500, f"Docling error: {e}")
-    if req.title is None:
-        req.title = document.name
+    # URL -> HTML via docling
+    document: DoclingDocument = convert_url(req.url)
 
-    excerpt = html_excerpt(html_text)
+    html: Path = settings.data_dir / f"{request_id}.html"
+    document.save_as_html(html, image_mode=ImageRefMode.EMBEDDED)
 
-    html_path: Path = settings.epub_dir / f"{request_id}.html"
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(html_text)
+    if not req.title:
+        if document.name not in ("file", "Untitled"):
+            req.title = document.name
+        else:
+            req.title = get_title(req.url)
+    if not req.title:
+        req.title = "Untitled"
 
-    safe_name = f"{request_id}.epub"
-    epub_path = settings.epub_dir / safe_name
+    epub: Path = convert_to_epub(html)
+    # txt: Path = convert_to_txt(html)
+    shutil.copy(html, html.with_name(f"{request_id}.original.html"))
 
-    try:
-        convert_to_epub(html_path, epub_path)
-    except Exception as e:
-        logger.error(f"EPUB conversion failed: {e}")
-        raise HTTPException(500, f"EPUB conversion failed: {e}")
+    # Excerpt
+    markdown: Path = settings.data_dir / f"{request_id}.md"
+    document.save_as_markdown(markdown)
+    excerpt = document.export_to_markdown()[: settings.excerpt_limit]
 
-    epub_url = f"/epub/{safe_name}"
+    # Update RSS state
+    epub_url = f"/epub/{epub.name}"
+    update_rss(req, request_id, epub_url, excerpt)
 
-    update_rss(req.title, req.url, epub_url, excerpt)
-
-    return {"id": request_id, "epub": epub_url}
+    # and respond
+    return {"id": request_id, "epub": epub_url, "url": req.url, "title": req.title}
 
 
 @app.get("/epub/{file}")
 def get_epub(file: str):
-    path = settings.epub_dir / file
+    path = settings.data_dir / file
     if not path.exists():
         raise HTTPException(404)
     return FileResponse(path)
@@ -235,9 +258,9 @@ def get_epub(file: str):
 def rss(fmt: Literal["rss", "atom"]):
     if not settings.rss_state_path.exists():
         raise HTTPException(404)
-    with open(settings.rss_state_path, "r", encoding="utf-8") as f:
+    with open(settings.rss_state_path, "r") as f:
         state = RssState.model_validate_json(f.read())
-        feed = _state_to_feed(state)
+    feed = _state_to_feed(state, fmt)
 
     last_modified = state.updated
     etag = str(state.updated)  # lub hash entries
