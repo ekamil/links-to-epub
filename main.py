@@ -1,5 +1,4 @@
 # --- Full updated FastAPI app with docling HTML conversion and RSS excerpt ---
-import shutil
 from datetime import datetime, UTC
 from email.utils import format_datetime
 from hashlib import md5
@@ -81,7 +80,7 @@ class RssState(BaseModel):
 app = FastAPI()
 
 
-# region conversion: html from docling
+# region conversion
 
 
 def convert_url(url: str) -> DoclingDocument:
@@ -101,12 +100,6 @@ def get_title(url: str) -> str:
         return "Untitled"
 
 
-# endregion
-
-
-# region epub conversion
-
-
 def convert_to_epub(html: Path) -> Path:
     convertext.convert(
         html, "epub", output=str(settings.data_dir), keep_intermediate=False
@@ -121,11 +114,8 @@ def convert_to_txt(html: Path) -> Path:
     return settings.data_dir / f"{html.stem}.txt"
 
 
-def convert_to_html(html: Path) -> Path:
-    convertext.convert(
-        html, "html", output=str(settings.data_dir), keep_intermediate=False
-    )
-    return settings.data_dir / f"{html.stem}.html"
+def md5sum(url: str) -> str:
+    return md5(url.encode("utf-8")).hexdigest()
 
 
 # endregion
@@ -134,9 +124,7 @@ def convert_to_html(html: Path) -> Path:
 # region rss
 
 
-def update_rss(
-    request: SubmitRequest, request_id: str, epub_url: str, excerpt: str
-) -> None:
+def update_rss(request: SubmitRequest, request_id: str) -> None:
     """Update RSS feed using JSON state file and generate RSS from scratch."""
 
     # 1. Wczytaj stan z pliku, jeśli istnieje
@@ -150,6 +138,8 @@ def update_rss(
         state = RssState()
 
     # 2. Dodaj nowe entry
+    content = (settings.data_dir / f"{request_id}.html").read_text()
+    epub_url = f"/epub/{request_id}.epub"
     original_link = request.url
     entry = RssEntry(
         id=request_id,
@@ -157,8 +147,8 @@ def update_rss(
         epub_link=epub_url,
         original_link=original_link,
         # description doesnt work
-        content=f"<![CDATA[{excerpt}<br><br>Source: <a href='{original_link}'>{original_link}</a>]]>",
-        excerpt=excerpt,
+        content=content,
+        excerpt=content,
     )
     state.add_entry(entry)
 
@@ -186,29 +176,15 @@ def _state_to_feed(state: RssState, format: Literal["rss", "atom"]) -> FeedGener
         fe.title(e.title)
         fe.link(href=e.epub_link, rel="enclosure", type="application/epub+zip")
         fe.link(href=e.original_link, rel="alternate")
-        fe.content(
-            e.content,
-        )
+        fe.content(e.content)
         fe.summary(e.excerpt)
     return fg
-
-
-def rss_from_state(state: RssState) -> str:
-    fg = _state_to_feed(state)
-    return fg.rss_str(pretty=True)
-
-
-def atom_from_state(state: RssState) -> str:
-    fg = _state_to_feed(state)
-    return fg.atom_str(pretty=True)
 
 
 # endregion
 
 
 # region endpoints
-def md5sum(url: str) -> str:
-    return md5(url.encode("utf-8")).hexdigest()
 
 
 @app.post("/submit")
@@ -229,21 +205,17 @@ def submit(req: SubmitRequest):
     if not req.title:
         req.title = "Untitled"
 
-    epub: Path = convert_to_epub(html)
-    # txt: Path = convert_to_txt(html)
-    shutil.copy(html, html.with_name(f"{request_id}.original.html"))
+    convert_to_epub(html)
 
-    # Excerpt
-    markdown: Path = settings.data_dir / f"{request_id}.md"
-    document.save_as_markdown(markdown)
-    excerpt = document.export_to_markdown()[: settings.excerpt_limit]
+    # MD
+    # markdown: Path = settings.data_dir / f"{request_id}.md"
+    # document.save_as_markdown(markdown)
 
     # Update RSS state
-    epub_url = f"/epub/{epub.name}"
-    update_rss(req, request_id, epub_url, excerpt)
+    update_rss(req, request_id)
 
     # and respond
-    return {"id": request_id, "epub": epub_url, "url": req.url, "title": req.title}
+    return {"id": request_id, "url": req.url, "title": req.title}
 
 
 @app.get("/epub/{file}")
