@@ -1,5 +1,5 @@
 services:
-  app:
+  app: &service
     build:
       context: .
       dockerfile: Dockerfile
@@ -7,6 +7,7 @@ services:
     environment:
       LTE_DATA_DIR: /data
       LTE_BASE_URL: http://localhost:8000
+      LTE_SERVER_PORT: "${APP_PORT:-8000}"
     volumes:
       - ./data:/data
     ports:
@@ -24,3 +25,12 @@ services:
       context: .
       dockerfile: tests.Dockerfile
     container_name: links-to-epub-tests
+
+  web:
+    <<: *service
+    # for deployment with git-deploy
+    ports: [ ]
+    volumes: [ ]
+    environment:
+      LTE_SERVER_PORT: "${APP_PORT:-8000}"
+      LTE_SERVER_ADDRESS: "0.0.0.0"
