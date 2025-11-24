@@ -1,15 +1,32 @@
 ### submit
 POST http://localhost:8000/submit
 
-{"url": "https://essekkat.pl/"}
+{"url": "https://www.jenn.site/after-my-dad-died-we-found-the-love-letters/"}
+
+### submit
+POST http://localhost:8000/submit
+
+{"url": "https://jenn.site/dissolution/"}
 
 
 ### RSS
 GET http://localhost:8000/feed/rss
 
 
-
-
 ### ATOM
 GET http://localhost:8000/feed/atom
 
+
+### EPUB
+GET http://localhost:8000/feed/epub
+
+
+### List
+GET http://localhost:8000/
+
+
+### Refresh
+POST http://localhost:8000/refresh-feeds/
+
+### clear
+DELETE http://localhost:8000/

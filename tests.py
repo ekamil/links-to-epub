@@ -29,3 +29,7 @@ def test_happy_path():
     response = client.get("/feed/atom")
     assert response.status_code == 200
     assert response.content
+    # When requesting the EPUB file
+    response = client.get("/epub")
+    assert response.status_code == 200
+    assert response.content

@@ -1,4 +1,5 @@
 # --- Full updated FastAPI app with docling HTML conversion and RSS excerpt ---
+import re
 from datetime import datetime, UTC
 from email.utils import format_datetime
 from hashlib import md5
@@ -12,7 +13,6 @@ from docling.document_converter import DocumentConverter
 from docling_core.types import DoclingDocument
 from docling_core.types.doc import ImageRefMode
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
 from feedgen.feed import FeedGenerator
 from loguru import logger
 from pydantic import BaseModel, DirectoryPath, Field
@@ -38,6 +38,22 @@ class Settings(BaseSettings):
     def rss_state_path(self) -> Path:
         return self.data_dir / "state.json"
 
+    @property
+    def feed_md(self) -> Path:
+        return self.data_dir / "feed.md"
+
+    @property
+    def feed_epub(self) -> Path:
+        return self.data_dir / "feed.epub"
+
+    @property
+    def feed_atom(self) -> Path:
+        return self.data_dir / "feed.atom"
+
+    @property
+    def feed_rss(self) -> Path:
+        return self.data_dir / "feed.rss"
+
 
 settings = Settings()
 
@@ -54,10 +70,12 @@ class SubmitRequest(BaseModel):
 class RssEntry(BaseModel):
     id: str
     title: str
-    epub_link: str
     original_link: str
     content: str
-    excerpt: str
+
+    @property
+    def excerpt(self):
+        return self.content
 
 
 class RssState(BaseModel):
@@ -100,18 +118,18 @@ def get_title(url: str) -> str:
         return "Untitled"
 
 
-def convert_to_epub(html: Path) -> Path:
-    convertext.convert(
-        html, "epub", output=str(settings.data_dir), keep_intermediate=False
+def convert_to_epub(inputfile: Path) -> Path:
+    success = convertext.convert(
+        inputfile,
+        "epub",
+        output=str(settings.data_dir),
+        keep_intermediate=False,
+        overwrite=True,
     )
-    return settings.data_dir / f"{html.stem}.epub"
-
-
-def convert_to_txt(html: Path) -> Path:
-    convertext.convert(
-        html, "txt", output=str(settings.data_dir), keep_intermediate=False
+    logger.info(
+        f"Conversion for {inputfile} result: {success}. Target {inputfile.stem}.epub"
     )
-    return settings.data_dir / f"{html.stem}.txt"
+    return settings.data_dir / f"{inputfile.stem}.epub"
 
 
 def md5sum(url: str) -> str:
@@ -121,10 +139,7 @@ def md5sum(url: str) -> str:
 # endregion
 
 
-# region rss
-
-
-def update_rss(request: SubmitRequest, request_id: str) -> None:
+def update_rss_state(request: SubmitRequest, request_id: str) -> RssState:
     """Update RSS feed using JSON state file and generate RSS from scratch."""
 
     # 1. Wczytaj stan z pliku, jeśli istnieje
@@ -139,16 +154,13 @@ def update_rss(request: SubmitRequest, request_id: str) -> None:
 
     # 2. Dodaj nowe entry
     content = (settings.data_dir / f"{request_id}.html").read_text()
-    epub_url = f"/epub/{request_id}.epub"
     original_link = request.url
     entry = RssEntry(
         id=request_id,
         title=request.title,
-        epub_link=epub_url,
         original_link=original_link,
         # description doesnt work
         content=content,
-        excerpt=content,
     )
     state.add_entry(entry)
 
@@ -159,14 +171,16 @@ def update_rss(request: SubmitRequest, request_id: str) -> None:
     with open(settings.rss_state_path, "w") as f:
         f.write(state.model_dump_json(indent=2))
 
+    return state
 
-def _state_to_feed(state: RssState, format: Literal["rss", "atom"]) -> FeedGenerator:
+
+def _state_to_feed(state: RssState, fmt: Literal["rss", "atom"]) -> FeedGenerator:
     with open(settings.rss_state_path, "r") as f:
         state = RssState.model_validate_json(f.read())
     fg = FeedGenerator()
     fg.id("EPUB Downloads Feed")
-    fg.title(f"EPUB Downloads Feed {format}")
-    fg.link(href=f"{settings.base_url}/{format}", rel="self")
+    fg.title(f"EPUB Downloads Feed {fmt}")
+    fg.link(href=f"{settings.base_url}/{fmt}", rel="self")
     fg.description("Auto-generated feed of processed documents")
     fg.lastBuildDate(state.updated)
 
@@ -174,14 +188,76 @@ def _state_to_feed(state: RssState, format: Literal["rss", "atom"]) -> FeedGener
         fe = fg.add_entry()
         fe.id(e.id)
         fe.title(e.title)
-        fe.link(href=e.epub_link, rel="enclosure", type="application/epub+zip")
         fe.link(href=e.original_link, rel="alternate")
         fe.content(e.content)
         fe.summary(e.excerpt)
     return fg
 
 
-# endregion
+def enforce_min_heading_level(md: str, min_level: int = 2) -> str:
+    """
+    Wymusza minimalny poziom nagłówków Markdown (#..######).
+    - Nagłówki o poziomie < min_level zostaną podniesione do min_level.
+    - Nagłówki o poziomie >= min_level pozostają bez zmian.
+    - Poziom nie przekroczy 6 (H6).
+
+    Parametry:
+        md: wejściowy tekst Markdown
+        min_level: minimalny dozwolony poziom nagłówka (1..6)
+
+    Zwraca:
+        Zmieniony tekst Markdown.
+    """
+    if not (1 <= min_level <= 6):
+        raise ValueError("min_level musi być w zakresie 1..6")
+
+    heading_re = re.compile(r"^(#{1,6})([ \t]+)(.*\S.*)$", flags=re.M)
+
+    def repl(m: re.Match) -> str:
+        hashes, space, rest = m.group(1), m.group(2), m.group(3)
+        level = len(hashes)
+        if level < min_level:
+            level = min_level
+        level = min(level, 6)
+        return "#" * level + space + rest
+
+    return heading_re.sub(repl, md)
+
+
+def merge_markdowns_into_epub(state: RssState) -> None:
+    """Generate a single EPUB file from all the markdown files.
+    This is kind of a feed like RSS.
+    """
+    # Sformatuj markdown
+    merged_markdowns = [
+        "# EPUB Downloads Feed\n\n",
+        f"Last updated: {state.updated.isoformat()}.\n\n",
+    ]
+    for e in reversed(state.entries):  # oldest first
+        merged_markdowns.append(f"# {e.title}\n")
+        merged_markdowns.append(f"Published on {e.title}.\n")
+        merged_markdowns.append(
+            f"Source link: [{e.original_link}]({e.original_link}).\n"
+        )
+        content = (settings.data_dir / f"{e.id}.md").read_text()
+        content = enforce_min_heading_level(content, 2)
+        merged_markdowns.append(content)
+        merged_markdowns.append("\n---\n\n")
+    with open(settings.feed_md, "w") as f:
+        f.writelines(merged_markdowns)
+    # Zapisz jako epub
+    convert_to_epub(settings.feed_md)
+
+
+def refresh_feeds(state: RssState) -> None:
+    # create a single epub
+    merge_markdowns_into_epub(state)
+
+    # create feed files
+    feed = _state_to_feed(state, "rss")
+    feed.rss_file(settings.feed_rss)
+    feed = _state_to_feed(state, "atom")
+    feed.atom_file(settings.feed_atom)
 
 
 # region endpoints
@@ -205,34 +281,53 @@ def submit(req: SubmitRequest):
     if not req.title:
         req.title = "Untitled"
 
-    convert_to_epub(html)
-
     # MD
-    # markdown: Path = settings.data_dir / f"{request_id}.md"
-    # document.save_as_markdown(markdown)
+    markdown: Path = settings.data_dir / f"{request_id}.md"
+    document.save_as_markdown(markdown)
 
     # Update RSS state
-    update_rss(req, request_id)
+    state = update_rss_state(req, request_id)
+    refresh_feeds(state)
 
     # and respond
     return {"id": request_id, "url": req.url, "title": req.title}
 
 
-@app.get("/epub/{file}")
-def get_epub(file: str):
-    path = settings.data_dir / file
-    if not path.exists():
-        raise HTTPException(404)
-    return FileResponse(path)
-
-
-@app.get("/feed/{fmt}")
-def rss(fmt: Literal["rss", "atom"]):
+def read_state_or_404() -> RssState:
     if not settings.rss_state_path.exists():
         raise HTTPException(404)
     with open(settings.rss_state_path, "r") as f:
         state = RssState.model_validate_json(f.read())
-    feed = _state_to_feed(state, fmt)
+    return state
+
+
+@app.get("/")
+def list_entries():
+    state = read_state_or_404()
+    for entry in state.entries:
+        entry.content = "-"
+    return state
+
+
+@app.delete("/")
+def clear():
+    # TODO
+    return Response(status_code=204)
+
+
+@app.post("/refresh-feeds")
+def clear_feeds():
+    state = read_state_or_404()
+    settings.feed_md.unlink(missing_ok=True)
+    settings.feed_rss.unlink(missing_ok=True)
+    settings.feed_atom.unlink(missing_ok=True)
+    refresh_feeds(state)
+    return Response(status_code=204)
+
+
+@app.get("/feed/{fmt}")
+def rss(fmt: Literal["rss", "atom", "epub"]):
+    state = read_state_or_404()
 
     last_modified = state.updated
     etag = str(state.updated)  # lub hash entries
@@ -248,11 +343,18 @@ def rss(fmt: Literal["rss", "atom"]):
     # Get content as a string
     match fmt:
         case "rss":
+            feed = _state_to_feed(state, fmt)
             content = feed.rss_str(pretty=True)
             headers["Content-Type"] = "application/rss+xml; charset=utf-8"
         case "atom":
+            feed = _state_to_feed(state, fmt)
             content = feed.atom_str(pretty=True)
             headers["Content-Type"] = "application/atom+xml"
+        case "epub":
+            feed = _state_to_feed(state, fmt)
+            content = feed.atom_str(pretty=True)
+            headers["Content-Type"] = "application/epub+zip"
+            headers["Content-Disposition"] = 'inline; filename="feed.xml"'
         case _:
             raise HTTPException(400, f"Unknown format: {fmt}")
     return Response(
