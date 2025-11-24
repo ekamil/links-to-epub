@@ -1,3 +1,6 @@
+### List
+GET {{base_url}}/
+
 ### submit
 POST {{base_url}}/submit
 
@@ -8,22 +11,14 @@ POST {{base_url}}/submit
 
 {"url": "https://jenn.site/dissolution/"}
 
-
 ### RSS
 GET {{base_url}}/feed/rss
-
 
 ### ATOM
 GET {{base_url}}/feed/atom
 
-
 ### EPUB
 GET {{base_url}}/feed/epub
-
-
-### List
-GET {{base_url}}/
-
 
 ### Refresh
 POST {{base_url}}/refresh-feeds/
