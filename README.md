@@ -1,13 +1,5 @@
 # Project README
 
-## Next steps
-
-1. n8n flow
-1. webhook endpoint
-1. deploy this as docker compose with traefik (maybe?)
-1. n8n calls /submit
-1. then saves /epub to the google drive
-
 # Docling → EPUB → RSS Web Service
 
 This project is a lightweight FastAPI web application that:
