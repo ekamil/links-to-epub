@@ -17,7 +17,7 @@ from feedgen.feed import FeedGenerator
 from loguru import logger
 from pydantic import BaseModel, DirectoryPath, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from starlette.responses import Response
+from starlette.responses import Response, FileResponse
 
 
 # region settings
@@ -349,6 +349,7 @@ def clear():
 def clear_feeds():
     state = read_state_or_404()
     settings.feed_md.unlink(missing_ok=True)
+    settings.feed_epub.unlink(missing_ok=True)
     settings.feed_rss.unlink(missing_ok=True)
     settings.feed_atom.unlink(missing_ok=True)
     logger.info("Feeds removed; regenerating")
@@ -370,27 +371,23 @@ def rss(fmt: Literal["rss", "atom", "epub"]):
         "ETag": f'"{etag}"',
         "Content-Disposition": 'inline; filename="feed.xml"',
     }
-
     match fmt:
         case "rss":
-            feed = _state_to_feed(state, fmt)
-            content = feed.rss_str(pretty=True)
+            content_file = settings.feed_rss
             headers["Content-Type"] = "application/rss+xml; charset=utf-8"
         case "atom":
-            feed = _state_to_feed(state, fmt)
-            content = feed.atom_str(pretty=True)
+            content_file = settings.feed_atom
             headers["Content-Type"] = "application/atom+xml"
         case "epub":
-            feed = _state_to_feed(state, fmt)
-            content = feed.atom_str(pretty=True)
+            content_file = settings.feed_epub
             headers["Content-Type"] = "application/epub+zip"
-            headers["Content-Disposition"] = 'inline; filename="feed.xml"'
+            headers["Content-Disposition"] = 'inline; filename="feed.epub"'
         case _:
             logger.warning(f"Feed unknown fmt: {fmt}")
             raise HTTPException(400, f"Unknown format: {fmt}")
     logger.info(f"Feed served: {fmt}")
-    return Response(
-        content,
+    return FileResponse(
+        content_file,
         headers=headers,
         status_code=200,
     )
