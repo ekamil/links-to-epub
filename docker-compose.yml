@@ -1,0 +1,26 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: links-to-epub-app
+    environment:
+      LTE_DATA_DIR: /data
+      LTE_BASE_URL: http://localhost:8000
+    volumes:
+      - ./data:/data
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -fsS http://localhost:8000/ || exit 1" ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  tests:
+    build:
+      context: .
+      dockerfile: tests.Dockerfile
+    container_name: links-to-epub-tests

@@ -57,6 +57,8 @@ class Settings(BaseSettings):
 
 settings = Settings()
 logger.info(f"App start. Data dir: {settings.data_dir}")
+
+
 # endregion
 
 
