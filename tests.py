@@ -1,13 +1,21 @@
+import pytest
 from starlette.testclient import TestClient
 
-from main import app
+from main import app, settings
 
 REAL_URL = "https://essekkat.pl/"  # przykładowa prawdziwa strona
 
 client = TestClient(app)
 
 
-def test_happy_path():
+@pytest.fixture
+def mock_tmp_dir(monkeypatch, tmp_path):
+    new_settings = settings.model_copy(deep=True)
+    new_settings.data_dir = tmp_path
+    monkeypatch.setattr("main.settings", new_settings)
+
+
+def test_happy_path(mock_tmp_dir):
     # When submitting a valid URL
     response = client.post(
         "/submit",
