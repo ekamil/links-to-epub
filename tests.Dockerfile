@@ -33,7 +33,7 @@ RUN uv sync --locked
 
 # Copy the rest of the application files
 ADD main.py ./
-ADD tests.py ./
+ADD tests ./tests
 
 ENV LTE_DATA_DIR=/tmp
-CMD ["uv", "run", "pytest", "tests.py"]
+CMD ["uv", "run", "pytest"]
