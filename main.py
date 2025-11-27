@@ -15,7 +15,7 @@ from docling_core.types.doc import ImageRefMode
 from fastapi import FastAPI, HTTPException
 from feedgen.feed import FeedGenerator
 from loguru import logger
-from pydantic import BaseModel, DirectoryPath, Field
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from starlette.responses import Response, FileResponse
 
@@ -28,7 +28,7 @@ class Settings(BaseSettings):
         env_file=".env", env_prefix="LTE_", extra="ignore"
     )
 
-    data_dir: DirectoryPath
+    data_dir: Path
     base_url: str = "http://localhost:8000"
     # Excerpt
     excerpt_limit: int = 200
